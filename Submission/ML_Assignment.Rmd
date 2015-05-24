@@ -1,0 +1,141 @@
+---
+title: "Project Submission for Machine Learning Course"
+output: html_document
+---
+
+**Background**
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+**Data**
+
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har]. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+**What you should submit**
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+Your submission should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+You should also apply your machine learning algorithm to the 20 test cases available in the test data above. Please submit your predictions in appropriate format to the programming assignment for automated grading. See the programming assignment for additional details.
+
+
+**Reproduceability; Getting and Cleaning Data**
+
+To allow for reproducibility, the seed is being set here: 
+
+```{r}
+set.seed(123)
+```
+
+The first step is to download the files into your working folder such that you can read the CSV files from them. I load a few packages that are needed for the analysis and then proceed to clean up the data. 
+
+Loading necessary packages
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+library(caret)
+library(rpart)
+library(rattle)
+library(ggplot2)
+library(doSNOW)
+```
+
+Next, we need to read the downloaded CSVs into the memory (Note that we can do this by reading the url directly in the read.csv() function, reading in downloaded files is just faster).
+
+```{r}
+#Read in the downloaded training and test sets and replace missing values with NAs
+trainingSet <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!", ""))
+testingSet <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!", ""))
+dim(trainingSet)
+dim(testingSet)
+```
+
+As shown above, one of the first things done in terms of data cleanup is to replace the missing values with NAs. We see that the training and testing sets have 160 variables, which is a very large number of variables to incorporate into a model. To reduce the number of variables, we find variables that have near zero values and remove those from the equation. This is shown below: 
+
+```{r}
+train_NZV <- nearZeroVar(trainingSet, saveMetrics=TRUE)
+trainingSet <- trainingSet[, -which(train_NZV$nzv == TRUE)]
+```
+
+Next, we remove the first five variables "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2" and "cvtd_timestamp", because they are of no use to the model. Further, since NAs make the model building process slower as well as introduce inaccuracies, we proceed to remove these variables from the model as well 
+
+```{r}
+NAs <- apply(trainingSet, 2, function(x) {sum(is.na(x))})
+trainingSet <- trainingSet[, which(NAs == 0)]
+
+trainingSet <- trainingSet[,-c(1:5)]
+
+ncol(trainingSet)
+```
+
+
+We have now reduced the number of variables in our model from 160 to 54. Now we can begin the model training. 
+
+
+**Partioning the training set into training and testing sets**
+
+Here, 70% of the training data set is assigned to an internal training set and the 30% is assigned to an internal testing set for cross-validation. 
+
+```{r}
+inTrain <- createDataPartition(y = trainingSet$classe, p = 0.7, list = FALSE)
+train <- trainingSet[inTrain, ]
+test <- trainingSet[-inTrain, ]
+```
+
+**Prediction mechanism 1: Decision Tree**
+
+We train the "classe" variable by utilizing all the variables in the model and using the Decision Tree algorithm. Once trained, we can see the output of the tree using the fancyRpartPlot() function. Next, the prediction is done on the internal test set for cross-validation and the confusion matrix shows us the accuracy of the model. 
+
+```{r, warning=FALSE}
+treeFit <- train(classe ~ ., method = "rpart", data = train)
+fancyRpartPlot(treeFit$finalModel)
+treeFitPrediction <- predict(treeFit, test)
+confusionMatrix(treeFitPrediction, test$classe)
+```
+
+
+As we can see, the model produces a 50-ish% accuracy, which is very low for prediction purposes. Therefore, we should try a different model. 
+
+
+**Prediction mechanism 2: Random forest**
+
+Here, we try the random forest algorithm. Since random forests take very long in terms of computational time, the doSNOW package has been used to parallelize the process and cross validation is used in the train control function that feeds into the train() function. Also note that the parRF method is used for parallel processing instead of the rf method. Once this is set up, the prediction is done on the internal testing data set for cross-validation.
+
+```{r, warning=FALSE}
+ctrl <- trainControl(method = "cv", number = 4, allowParallel = TRUE)
+randomForestModel <- train(classe ~ ., data = train, method = "parRF", trControl = ctrl, tuneGrid = data.frame(mtry = 3))
+randomForestPrediction <- predict(randomForestModel, test)
+confusionMatrix(randomForestPrediction, test$classe)
+```
+
+As expected, the random forest algorithm produces a much higher accuracy (over 99%), which is good for a predictive model. Therefore we choose this algorithm to predict the "classe" variable in the testing set provided to us.
+
+
+
+
+**File submissions for Assignment**
+
+We use the random forest predictor object to predict against the provided test set because of higher accuracy. To do so, we first have to reduce the number of columns in the test set to the same number of columns as the training set. 
+
+```{r}
+testingSet2 <- testingSet[ , names(testingSet) %in% colnames(trainingSet)] # logical indexing
+predictions <- predict(randomForestModel, testingSet2)
+```
+
+Finally, we write the output into 20 text files for submission by using the code provided: 
+
+```{r}
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(predictions)
+```
+
